@@ -541,6 +541,40 @@ namespace Cmf.CLI.Core.Objects
         }
 
         /// <summary>
+        /// Sets virtual root dependencies in memory for the configured MES version before packing.
+        /// Existing applicable dependencies are preserved and the source package file is not rewritten.
+        /// </summary>
+        public void SetVirtualDependencies()
+        {
+            var projectConfig = ExecutionContext.Instance?.ProjectConfig;
+            var mesVersion = projectConfig?.MESVersion;
+            if (PackageType != PackageType.Root || mesVersion == null)
+            {
+                return;
+            }
+
+            Dependencies ??= new DependencyCollection();
+            const string environmentId = "Cmf.Environment";
+            const string metadataId = "CriticalManufacturing.DeploymentMetadata";
+            var environmentDependency = Dependencies.FirstOrDefault(d => d.Id.IgnoreCaseEquals(environmentId));
+            if (environmentDependency == null)
+            {
+                environmentDependency = new Dependency(environmentId, mesVersion.ToString()) { Mandatory = false };
+                Dependencies.Insert(0, environmentDependency);
+            }
+
+            if (mesVersion.Major > 10 || projectConfig.RepositoryType == RepositoryType.App)
+            {
+                Dependencies.RemoveAll(d => d.Id.IgnoreCaseEquals(metadataId));
+            }
+            else if (!Dependencies.Contains(metadataId))
+            {
+                Dependencies.Insert(Dependencies.IndexOf(environmentDependency) + 1,
+                    new Dependency(metadataId, mesVersion.ToString()) { Mandatory = false });
+            }
+        }
+
+        /// <summary>
         /// Sets the version.
         /// </summary>
         /// <param name="version">The version.</param>

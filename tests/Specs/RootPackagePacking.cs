@@ -11,6 +11,7 @@ using Cmf.CLI.Factories;
 using Cmf.CLI.Handlers;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Newtonsoft.Json.Linq;
 using Xunit;
 using PackageHandler = Cmf.CLI.Handlers.PackageTypeHandler;
 
@@ -35,15 +36,29 @@ public class RootPackagePacking
     [InlineData("12.0.0", "App", "Root", false)]
     [InlineData("10.2.5", "Customization", "Generic", false)]
     [InlineData("11.0.0", "Customization", "Generic", false)]
-    public void Manifest_AddsDependenciesOnlyForRoots(string mesVersion, string repositoryType, string packageType, bool hasMetadata)
+    public void VirtualDependencies_PopulateOnlyRootsAndUseNormalManifestGeneration(string mesVersion, string repositoryType, string packageType, bool hasMetadata)
     {
         var fileSystem = CreateFileSystem(mesVersion, repositoryType, packageType);
         var source = fileSystem.File.ReadAllText("/repo/cmfpackage.json");
         var handler = (PackageHandler)PackageTypeFactory.GetPackageTypeHandler(fileSystem.FileInfo.New("/repo/cmfpackage.json"));
-        var originalDependencies = handler.CmfPackage.Dependencies.ToArray();
+        var package = handler.CmfPackage;
+        var originalDependency = package.Dependencies.Single();
 
-        // Generating twice must not accumulate injected dependencies.
-        handler.GenerateDeploymentFrameworkManifest(fileSystem.DirectoryInfo.New("/repo/packed"));
+        // Virtual dependencies must be visible in memory before serialization, without accumulating duplicates.
+        package.SetVirtualDependencies();
+        package.SetVirtualDependencies();
+
+        package.Dependencies.Should().Contain(originalDependency);
+        var virtualDependencies = package.Dependencies.Where(d => d.Id != "Custom.Dependency").ToArray();
+        virtualDependencies.Should().HaveCount(packageType == "Root" ? (hasMetadata ? 2 : 1) : 0);
+        foreach (var dependency in virtualDependencies)
+        {
+            dependency.Version.Should().Be(mesVersion);
+            dependency.Mandatory.Should().BeFalse();
+            dependency.Conditional.Should().BeFalse();
+            dependency.IsIgnorable.Should().BeTrue();
+        }
+
         handler.GenerateDeploymentFrameworkManifest(fileSystem.DirectoryInfo.New("/repo/packed"));
 
         var manifest = XDocument.Parse(fileSystem.File.ReadAllText("/repo/packed/manifest.xml"));
@@ -61,7 +76,7 @@ public class RootPackagePacking
             ((string)dependency.Attribute("isIgnorable")).Should().Be("true");
         }
         fileSystem.File.ReadAllText("/repo/cmfpackage.json").Should().Be(source);
-        handler.CmfPackage.Dependencies.Should().Equal(originalDependencies);
+        dependencies.Select(d => (string)d.Attribute("id")).Should().Equal(package.Dependencies.Select(d => d.Id));
     }
 
     [Theory]
@@ -69,7 +84,7 @@ public class RootPackagePacking
     [InlineData("11.0.0", "Customization", false)]
     [InlineData("12.0.0", "Customization", false)]
     [InlineData("10.2.5", "App", false)]
-    public void Manifest_HandlesExistingDependenciesCaseInsensitively(string mesVersion, string repositoryType, bool hasMetadata)
+    public void VirtualDependencies_HandleExistingDependenciesCaseInsensitively(string mesVersion, string repositoryType, bool hasMetadata)
     {
         var fileSystem = CreateFileSystem(mesVersion, repositoryType, "Root", """
             { "id": "cmf.environment", "version": "10.0.1", "mandatory": true },
@@ -77,6 +92,12 @@ public class RootPackagePacking
             """);
         var source = fileSystem.File.ReadAllText("/repo/cmfpackage.json");
         var handler = (RootPackageTypeHandler)PackageTypeFactory.GetPackageTypeHandler(fileSystem.FileInfo.New("/repo/cmfpackage.json"));
+        var originalEnvironment = handler.CmfPackage.Dependencies.First();
+
+        handler.CmfPackage.SetVirtualDependencies();
+        handler.CmfPackage.SetVirtualDependencies();
+        handler.CmfPackage.Dependencies.First().Should().BeSameAs(originalEnvironment);
+        handler.CmfPackage.Dependencies.Should().HaveCount(hasMetadata ? 2 : 1);
 
         handler.GenerateDeploymentFrameworkManifest(fileSystem.DirectoryInfo.New("/repo/packed"));
 
@@ -98,8 +119,13 @@ public class RootPackagePacking
     {
         var fileSystem = CreateFileSystem(mesVersion, "Customization", "Root", "");
         var source = fileSystem.File.ReadAllText("/repo/cmfpackage.json");
+        var package = CmfPackage.Load(fileSystem.FileInfo.New("/repo/cmfpackage.json"));
 
-        new PackCommand(fileSystem).Execute(fileSystem.DirectoryInfo.New("/repo"), fileSystem.DirectoryInfo.New("/repo/output"), false);
+        package.ValidatePackage();
+        new PackCommand(fileSystem).Execute(package, fileSystem.DirectoryInfo.New("/repo/output"), false, false);
+
+        package.Dependencies.Should().ContainSingle(d => d.Id == "Cmf.Environment");
+        package.Dependencies.Count(d => d.Id == "CriticalManufacturing.DeploymentMetadata").Should().Be(hasMetadata ? 1 : 0);
 
         using var archive = new ZipArchive(fileSystem.File.OpenRead("/repo/output/Custom.Root.1.0.0.zip"));
         using var reader = new StreamReader(archive.GetEntry("manifest.xml").Open());
@@ -111,29 +137,65 @@ public class RootPackagePacking
     }
 
     [Fact]
-    public void Pack_DryRunDoesNotWriteFilesOrChangeDependencies()
+    public void Pack_DryRunPopulatesVirtualDependenciesWithoutWritingFiles()
     {
         var fileSystem = CreateFileSystem("10.2.5", "Customization", "Root");
         var originalFiles = fileSystem.AllFiles.ToArray();
+        var source = fileSystem.File.ReadAllText("/repo/cmfpackage.json");
         var package = CmfPackage.Load(fileSystem.FileInfo.New("/repo/cmfpackage.json"));
-        var originalDependencies = package.Dependencies.ToArray();
+        var originalDependency = package.Dependencies.Single();
 
         new PackCommand(fileSystem).Execute(package, fileSystem.DirectoryInfo.New("/repo/output"), false, true);
 
         fileSystem.AllFiles.Should().BeEquivalentTo(originalFiles);
-        package.Dependencies.Should().Equal(originalDependencies);
+        package.Dependencies.Should().HaveCount(3);
+        package.Dependencies.Should().Contain(originalDependency);
+        package.Dependencies.Should().ContainSingle(d => d.Id == "Cmf.Environment");
+        package.Dependencies.Should().ContainSingle(d => d.Id == "CriticalManufacturing.DeploymentMetadata");
+        fileSystem.File.ReadAllText("/repo/cmfpackage.json").Should().Be(source);
     }
 
     [Fact]
-    public void Manifest_WithoutMesVersionPreservesExistingDependencies()
+    public void VirtualDependencies_WithoutMesVersionPreserveExistingDependencies()
     {
         var fileSystem = CreateFileSystem(null, "Customization", "Root");
         var handler = (RootPackageTypeHandler)PackageTypeFactory.GetPackageTypeHandler(fileSystem.FileInfo.New("/repo/cmfpackage.json"));
+        var originalDependencies = handler.CmfPackage.Dependencies.ToArray();
+
+        handler.CmfPackage.SetVirtualDependencies();
+
+        handler.CmfPackage.Dependencies.Should().Equal(originalDependencies);
 
         handler.GenerateDeploymentFrameworkManifest(fileSystem.DirectoryInfo.New("/repo/packed"));
 
         var manifest = XDocument.Parse(fileSystem.File.ReadAllText("/repo/packed/manifest.xml"));
         manifest.Descendants("dependency").Should().ContainSingle(d => (string)d.Attribute("id") == "Custom.Dependency");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void VirtualDependencies_InitializeMissingOrNullCollection(bool explicitNull)
+    {
+        var fileSystem = CreateFileSystem("10.2.5", "Customization", "Root");
+        var source = JObject.Parse(fileSystem.File.ReadAllText("/repo/cmfpackage.json"));
+        if (explicitNull)
+        {
+            source["dependencies"] = JValue.CreateNull();
+        }
+        else
+        {
+            source.Remove("dependencies");
+        }
+        fileSystem.File.WriteAllText("/repo/cmfpackage.json", source.ToString());
+        var package = CmfPackage.Load(fileSystem.FileInfo.New("/repo/cmfpackage.json"));
+
+        new PackCommand(fileSystem).Execute(package, fileSystem.DirectoryInfo.New("/repo/output"), false, true);
+
+        package.Dependencies.Should().HaveCount(2);
+        package.Dependencies.Should().ContainSingle(d => d.Id == "Cmf.Environment");
+        package.Dependencies.Should().ContainSingle(d => d.Id == "CriticalManufacturing.DeploymentMetadata");
+        fileSystem.File.ReadAllText("/repo/cmfpackage.json").Should().Be(source.ToString());
     }
 
     private static MockFileSystem CreateFileSystem(string mesVersion, string repositoryType, string packageType,
