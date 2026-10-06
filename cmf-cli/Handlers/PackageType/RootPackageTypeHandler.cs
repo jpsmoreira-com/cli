@@ -54,6 +54,65 @@ namespace Cmf.CLI.Handlers
         }
 
         /// <summary>
+        /// Generates the root manifest with environment dependencies for the configured MES version.
+        /// </summary>
+        /// <param name="packageOutputDir">The package output directory.</param>
+        internal override void GenerateDeploymentFrameworkManifest(IDirectoryInfo packageOutputDir)
+        {
+            base.GenerateDeploymentFrameworkManifest(packageOutputDir);
+
+            var projectConfig = ExecutionContext.Instance?.ProjectConfig;
+            var mesVersion = projectConfig?.MESVersion;
+            if (mesVersion == null)
+            {
+                return;
+            }
+
+            var manifestPath = fileSystem.Path.Join(packageOutputDir.FullName, CliConstants.DeploymentFrameworkManifestFileName);
+            var manifest = XDocument.Parse(fileSystem.File.ReadAllText(manifestPath));
+            var root = manifest.Element("deploymentPackage", true);
+            var dependencies = root.Element("dependencies", true);
+            if (dependencies == null)
+            {
+                dependencies = new XElement("dependencies");
+                root.Add(dependencies);
+            }
+
+            const string environmentId = "Cmf.Environment";
+            const string metadataId = "CriticalManufacturing.DeploymentMetadata";
+            var environmentDependency = dependencies.Elements("dependency")
+                .FirstOrDefault(d => ((string)d.Attribute("id")).IgnoreCaseEquals(environmentId));
+            if (environmentDependency == null)
+            {
+                environmentDependency = CreateEnvironmentDependency(environmentId, mesVersion.ToString());
+                dependencies.AddFirst(environmentDependency);
+            }
+
+            var metadataDependencies = dependencies.Elements("dependency")
+                .Where(d => ((string)d.Attribute("id")).IgnoreCaseEquals(metadataId)).ToList();
+            if (mesVersion.Major > 10 || projectConfig.RepositoryType == RepositoryType.App)
+            {
+                metadataDependencies.ForEach(d => d.Remove());
+            }
+            else if (metadataDependencies.Count == 0)
+            {
+                environmentDependency.AddAfterSelf(CreateEnvironmentDependency(metadataId, mesVersion.ToString()));
+            }
+
+            fileSystem.File.WriteAllText(manifestPath, manifest.ToString());
+        }
+
+        private static XElement CreateEnvironmentDependency(string id, string version)
+        {
+            return new XElement("dependency",
+                new XAttribute("id", id),
+                new XAttribute("version", version),
+                new XAttribute("mandatory", false),
+                new XAttribute("conditional", false),
+                new XAttribute("isIgnorable", true));
+        }
+
+        /// <summary>
         /// Generates the deployment framework app manifest and the app icon image.
         /// </summary>
         /// <param name="packageOutputDir">The package output dir.</param>
