@@ -55,4 +55,7 @@
     <value>Handler for Package Type {0} not implemented!</value>
     <comment>0 - Package Type Name</comment>
   </data>
+  <data name="InvalidJwtPayload" xml:space="preserve">
+    <value>Invalid format JWT token, payload is missing or invalid.</value>
+  </data>
 </root>

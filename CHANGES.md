@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## Unreleased
+
+### Bug Fixes
+
+* Report expected validation, credential, and repository failures as controlled CLI errors without normal-mode stack traces. Preserve existing exit codes and unexpected-error diagnostics.
+
 ## [6.0.0-17](https://github.com/criticalmanufacturing/cli/compare/6.0.0-15...6.0.0-17) (2026-10-06)
 
 
